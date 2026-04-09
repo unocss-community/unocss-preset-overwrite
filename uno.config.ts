@@ -1,13 +1,12 @@
-import { defineConfig, presetUno } from 'unocss'
-import { presetStarter } from './src'
+import { defineConfig } from 'unocss'
+import { presetWind4 } from 'unocss/preset-wind4'
+import { presetOverwrite } from './src'
 
 // Just for Vscode Extension
 
 export default defineConfig({
   presets: [
-    presetUno(),
-    presetStarter({
-      span: 24,
-    }),
+    presetWind4(),
+    presetOverwrite({ css: '' }),
   ],
 })

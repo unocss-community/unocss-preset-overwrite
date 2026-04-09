@@ -4,5 +4,5 @@ export default defineConfig({
   entry: [
     './src/index.ts',
   ],
-  external: ['unocss'],
+  external: ['unocss', 'postcss', 'postcss-selector-parser'],
 })
