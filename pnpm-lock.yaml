@@ -11,9 +11,6 @@ importers:
       '@unocss/core':
         specifier: ^66.6.8
         version: 66.6.8
-      maybe-types:
-        specifier: ^0.2.0
-        version: 0.2.0
       postcss:
         specifier: ^8.5.9
         version: 8.5.9
@@ -1975,9 +1972,6 @@ packages:
 
   markdown-table@3.0.4:
     resolution: {integrity: sha512-wiYz4+JrLyb/DqW2hkFJxP7Vd7JuTDm77fvbM8VfEQdmSMqcImWeeRbHwZjBjIFki/VaMK2BhFi7oUUZeM5bqw==}
-
-  maybe-types@0.2.0:
-    resolution: {integrity: sha512-4ul+RHPcxNznI+Ke6xUT2/mcQTl54fYUdRZQ3QNkQsC4USfAxXkPTh+wEOx4UBsXYg214867v2ZeirQDJT7uOA==}
 
   mdast-util-find-and-replace@3.0.1:
     resolution: {integrity: sha512-SG21kZHGC3XRTSUhtofZkBzZTJNM5ecCi0SK2IMKmSXR8vO3peL+kb1O0z7Zl83jKtutG4k5Wv/W7V3/YHvzPA==}
@@ -4500,8 +4494,6 @@ snapshots:
       '@jridgewell/sourcemap-codec': 1.5.5
 
   markdown-table@3.0.4: {}
-
-  maybe-types@0.2.0: {}
 
   mdast-util-find-and-replace@3.0.1:
     dependencies:
