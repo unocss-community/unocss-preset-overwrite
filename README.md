@@ -2,7 +2,7 @@
 
 Rebuild UnoCSS output with a new theme while keeping the same tokens.
 
-This preset parses selectors from a previously generated CSS string and feeds them back into UnoCSS through `safelist`.
+This preset parses selectors from a previously generated CSS string and feeds them back into UnoCSS through `safelist`. Custom static CSS (rules outside Uno `layer:` blocks) can be preserved in the output.
 
 ## Why
 
@@ -13,6 +13,7 @@ When you only have compiled CSS (instead of source templates), switching theme v
 - extracting class tokens (e.g. `.text-red-500`, `.md\:grid-cols-2`)
 - extracting attributify tokens (e.g. `[bg~="red-500"]`, `[flex=""]`)
 - safelisting those tokens for the next UnoCSS run
+- optionally appending your own static CSS (`@media`, `@keyframes`, component styles, etc.)
 
 ## Installation
 
@@ -38,24 +39,12 @@ const css = readFileSync(
 export default defineConfig({
   presets: [
     presetWind4(),
-    presetOverwrite({
-      css,
-    }),
+    presetOverwrite({ css }),
   ],
 })
 ```
 
-### API
-
-```ts
-interface PresetOverwriteOptions {
-  css?: string | (() => string)
-}
-```
-
-- `css` can be:
-  - a plain CSS string
-  - a callback returning a CSS string (useful when the value is lazily loaded)
+Change the theme in `uno.config.ts`, run UnoCSS again, and utilities are regenerated from the same tokens while theme variables update.
 
 ### Attributify support
 
@@ -76,19 +65,105 @@ export default defineConfig({
 })
 ```
 
-## Utility function
+## Custom static CSS
 
-You can also use the extractor directly:
+By default, `customCss` is enabled. Any CSS **outside** Uno `layer:` blocks in the input string is appended to the generated output (via a preflight). This includes `@media`, `@supports`, `@container`, `@keyframes`, `@font-face`, and complex selectors.
+
+**Recommended:** place custom styles **before** the first `/* layer: … */` comment in your CSS file:
+
+```css
+/* your-custom.css */
+@media (min-width: 768px) {
+  .sidebar { width: 200px; }
+}
+
+/* --- Uno compiled output below --- */
+/* layer: theme */
+…
+/* layer: utilities */
+.flex { display: flex; }
+```
+
+**After Uno layers:** prefix trailing custom CSS with a static-region marker:
+
+```css
+/* layer: utilities */
+.flex { display: flex; }
+
+/* @unocss-preset-overwrite:static */
+@media (min-width: 48rem) {
+  .trailing { margin: auto; }
+}
+```
+
+Disable or customize via `customCss`:
 
 ```ts
-import { extractUnoClassTokensFromCss } from 'unocss-preset-overwrite'
+presetOverwrite({
+  css,
+  customCss: false, // do not append static CSS
+})
 
+presetOverwrite({
+  css,
+  customCss: true, // enabled, default layer (same as omitting customCss)
+})
+
+presetOverwrite({
+  css,
+  customCss: {
+    layerName: 'my-components',
+    layerIndex: 100, // higher = later in output
+  },
+})
+```
+
+## API
+
+```ts
+interface PresetOverwriteOptions {
+  /** Previously compiled CSS (string or lazy callback). */
+  css?: string | (() => string)
+  /**
+   * Append non-Uno CSS from `css` to the output.
+   * @default {} (enabled)
+   */
+  customCss?: boolean | CustomCssOptions
+}
+
+interface CustomCssOptions {
+  /** @default 'preset-overwrite-custom' */
+  layerName?: string
+  /** @default 9999 */
+  layerIndex?: number
+}
+```
+
+| `customCss` | Behavior |
+|-------------|----------|
+| omitted / `true` / `{}` | Append static CSS with default layer |
+| `false` | Safelist only; no static CSS appended |
+| `{ layerName, layerIndex }` | Append with custom layer name and sort order |
+
+## Utility functions
+
+```ts
+import {
+  extractCustomCssFromCss,
+  extractUnoClassTokensFromCss,
+} from 'unocss-preset-overwrite'
+
+// Uno utility tokens for safelist / debugging
 const tokens = extractUnoClassTokensFromCss(previousCompiledCss)
+
+// Static CSS outside Uno layer blocks (empty string if no layer markers)
+const staticCss = extractCustomCssFromCss(previousCompiledCss)
 ```
 
 ## Notes
 
-- The extractor skips UnoCSS `base`, `theme`, and `properties` layers when layer markers are present, to avoid false positives from preflight selectors.
+- When layer markers (`/* layer: … */`) are present, token extraction skips `base`, `theme`, and `properties` layers to avoid false positives from preflight selectors.
+- `extractCustomCssFromCss` / `customCss` require layer markers in the input; plain CSS without them only contributes tokens via `extractUnoClassTokensFromCss`, not static append.
 - Output quality depends on how complete your previous compiled CSS is.
 
 ## License
