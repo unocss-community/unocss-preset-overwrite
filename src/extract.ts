@@ -12,6 +12,8 @@ const SKIP_LAYERS = new Set(['base', 'theme', 'properties'])
 
 const LAYER_LINE_RE = /^layer:\s*(\S+)/
 const ROOT_LAYER_MARKER_RE = /^\s*layer:\s*\S+/
+/** Start collecting static CSS even inside Uno layer blocks (until the next `layer:` comment). */
+const STATIC_REGION_RE = /^@unocss-preset-overwrite:static$/
 
 function attributifyTokenFromAttribute(
   attr: selectorParser.Attribute,
@@ -66,6 +68,45 @@ function walkForTokens(container: postcss.Container, layer: string | null, token
   }
 }
 
+function collectCustomCssNodes(
+  container: postcss.Container,
+  layer: string | null,
+  out: postcss.ChildNode[],
+  forceStatic = false,
+) {
+  let currentLayer = layer
+  let staticRegion = forceStatic
+  const nodes = container.nodes ?? []
+
+  for (const node of nodes) {
+    if (node.type === 'comment') {
+      const text = node.text.trim()
+      if (STATIC_REGION_RE.test(text)) {
+        staticRegion = true
+        continue
+      }
+      const m = text.match(LAYER_LINE_RE)
+      if (m) {
+        staticRegion = false
+        currentLayer = m[1]!
+        continue
+      }
+      if (!currentLayer || staticRegion)
+        out.push(node.clone())
+    }
+    else if (node.type === 'rule' || node.type === 'decl') {
+      if (!currentLayer || staticRegion)
+        out.push(node.clone())
+    }
+    else if (node.type === 'atrule') {
+      if (!currentLayer || staticRegion)
+        out.push(node.clone())
+      else
+        collectCustomCssNodes(node, currentLayer, out)
+    }
+  }
+}
+
 function rootDeclaresLayers(root: postcss.Root): boolean {
   let found = false
   root.walkComments((c) => {
@@ -110,4 +151,40 @@ export function extractUnoClassTokensFromCss(css: string): string[] {
     root.walkRules(rule => extractFromSelector(rule.selector, tokens))
 
   return [...tokens]
+}
+
+/**
+ * Return CSS that sits outside Uno `layer:` blocks (e.g. custom rules before/after compiled output).
+ *
+ * Requires layer markers in the input; otherwise returns an empty string.
+ *
+ * Custom CSS appended after Uno layers can be marked with a block comment:
+ * `/* @unocss-preset-overwrite:static *\/` — everything until the next `layer:` comment is preserved.
+ */
+export function extractCustomCssFromCss(css: string): string {
+  const trimmed = css.trim()
+  if (!trimmed)
+    return ''
+
+  let root: postcss.Root
+  try {
+    root = postcss.parse(trimmed, { from: undefined })
+  }
+  catch {
+    return ''
+  }
+
+  if (!rootDeclaresLayers(root))
+    return ''
+
+  const nodes: postcss.ChildNode[] = []
+  collectCustomCssNodes(root, null, nodes)
+  if (nodes.length === 0)
+    return ''
+
+  const out = postcss.root()
+  for (const node of nodes)
+    out.append(node)
+
+  return out.toString().trim()
 }
