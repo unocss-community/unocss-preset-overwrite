@@ -1,22 +1,37 @@
+import type { UnoGenerator } from '@unocss/core'
+import type { CustomCssLayerConfig } from './extract'
 import { definePreset } from '@unocss/core'
-import { extractCustomCssFromCss, extractUnoClassTokensFromCss } from './extract'
+import {
+  extractCustomCssFromCss,
+  extractUnoClassTokensFromCss,
+} from './extract'
+
+export {
+  createUnoUtilityRuleMatcher,
+  CUSTOM_CSS_DEFAULT_LAYERS,
+  type CustomCssLayerConfig,
+  extractCustomCssFromCss,
+  type ExtractCustomCssOptions,
+  extractTokensFromSelector,
+  extractUnoClassTokensFromCss,
+  resolveCustomCssLayers,
+  type UnoUtilityRuleMatcher,
+} from './extract'
 
 const DEFAULT_CUSTOM_CSS_LAYER = 'preset-overwrite-custom'
 const DEFAULT_CUSTOM_CSS_LAYER_INDEX = 9999
 
-interface CustomCssOptions {
-  /**
-   * CSS layer name for appended static CSS (`preflights` entry).
-   *
-   * @default 'preset-overwrite-custom'
-   */
+export interface CustomCssOptions {
   layerName?: string
-  /**
-   * Sort order for {@link CustomCssOptions.layerName} in UnoCSS layer output (higher = later).
-   *
-   * @default 9999
-   */
   layerIndex?: number
+  /**
+   * Which compiled CSS layers are included in custom CSS output.
+   *
+   * - `preserve` — copy the whole layer (e.g. `['palette']`)
+   * - `default` — filter: only non-Uno rules ({@link CUSTOM_CSS_DEFAULT_LAYERS} when omitted)
+   * - `skip` — never include (overrides `preserve` / `default`)
+   */
+  layers?: CustomCssLayerConfig
 }
 
 interface PresetOverwriteOptions {
@@ -32,8 +47,9 @@ interface PresetOverwriteOptions {
    * - `true`, `{}`, or omitted — enabled with defaults
    * - `{ layerName, layerIndex }` — enabled with overrides
    *
-   * Requires layer markers in `css`; otherwise has no effect. For custom CSS placed after Uno
-   * layers, prefix it with the `@unocss-preset-overwrite:static` block comment.
+   * Requires layer markers in `css`; otherwise has no effect. Configure `layers.preserve` /
+   * `layers.default` to control which `layer:` comment blocks are included. For trailing CSS after
+   * Uno layers, use `@unocss-preset-overwrite:static`.
    *
    * @default {}
    */
@@ -69,8 +85,11 @@ const presetOverwrite = definePreset((options: PresetOverwriteOptions = {}) => {
     ...preset,
     preflights: [{
       layer: layerName,
-      getCSS: () => {
-        const custom = extractCustomCssFromCss(toValue(options.css))
+      getCSS: async (ctx) => {
+        const custom = await extractCustomCssFromCss(toValue(options.css), {
+          generator: ctx.generator as UnoGenerator,
+          layers: customCssOpts.layers,
+        })
         return custom || undefined
       },
     }],
@@ -80,10 +99,4 @@ const presetOverwrite = definePreset((options: PresetOverwriteOptions = {}) => {
   }
 })
 
-export {
-  type CustomCssOptions,
-  extractCustomCssFromCss,
-  extractUnoClassTokensFromCss,
-  presetOverwrite,
-  type PresetOverwriteOptions,
-}
+export { presetOverwrite, type PresetOverwriteOptions }
