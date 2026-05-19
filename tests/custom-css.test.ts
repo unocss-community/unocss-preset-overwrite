@@ -1,7 +1,7 @@
-import type { Preset } from 'unocss'
+import type { Preset, UnoGenerator } from 'unocss'
 import { createGenerator } from 'unocss'
 import presetWind4 from 'unocss/preset-wind4'
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import { extractCustomCssFromCss, extractUnoClassTokensFromCss, presetOverwrite } from '../src'
 
 const LAYER_TAIL = `
@@ -25,8 +25,18 @@ const mixedCss = `
 .text-sm { font-size: 0.875rem; }
 `
 
-it('extractCustomCssFromCss: keeps rules outside Uno layer blocks', () => {
-  const custom = extractCustomCssFromCss(mixedCss)
+let wind4: UnoGenerator
+
+beforeAll(async () => {
+  wind4 = await createGenerator({ presets: [presetWind4()] })
+})
+
+function withWind4(css: string) {
+  return extractCustomCssFromCss(css, { generator: wind4 })
+}
+
+it('extractCustomCssFromCss: keeps rules outside Uno layer blocks', async () => {
+  const custom = await extractCustomCssFromCss(mixedCss)
   expect(custom).toContain('.my-custom')
   expect(custom).toContain('color: blue')
   expect(custom).not.toContain('layer:')
@@ -37,14 +47,14 @@ it('extractUnoClassTokensFromCss: still ignores non-layer static selectors', () 
   expect(extractUnoClassTokensFromCss(mixedCss).sort()).toEqual(['flex', 'text-sm'])
 })
 
-it('extractCustomCssFromCss: empty when no layer markers', () => {
+it('extractCustomCssFromCss: empty when no layer markers', async () => {
   const css = '.foo { color: red; }'
-  expect(extractCustomCssFromCss(css)).toBe('')
+  expect(await extractCustomCssFromCss(css)).toBe('')
   expect(extractUnoClassTokensFromCss(css)).toEqual(['foo'])
 })
 
 describe('extractCustomCssFromCss: complex custom selectors', () => {
-  it('preserves @media with nested rules and pseudo-classes', () => {
+  it('preserves @media with nested rules and pseudo-classes', async () => {
     const css = `
 @media (min-width: 768px) {
   .sidebar { width: 200px; }
@@ -54,7 +64,7 @@ describe('extractCustomCssFromCss: complex custom selectors', () => {
   .no-print { display: none !important; }
 }
 ${LAYER_TAIL}`
-    const custom = extractCustomCssFromCss(css)
+    const custom = await extractCustomCssFromCss(css)
     expect(custom).toContain('@media (min-width: 768px)')
     expect(custom).toContain('.sidebar:hover')
     expect(custom).toContain('@media print')
@@ -62,7 +72,7 @@ ${LAYER_TAIL}`
     expect(custom).not.toContain('.flex')
   })
 
-  it('preserves @supports, @container, @keyframes, and @font-face', () => {
+  it('preserves @supports, @container, @keyframes, and @font-face', async () => {
     const css = `
 @supports (display: grid) {
   .grid-fallback { display: grid; }
@@ -79,7 +89,7 @@ ${LAYER_TAIL}`
   src: url("/fonts/custom.woff2") format("woff2");
 }
 ${LAYER_TAIL}`
-    const custom = extractCustomCssFromCss(css)
+    const custom = await extractCustomCssFromCss(css)
     expect(custom).toContain('@supports (display: grid)')
     expect(custom).toContain('@container card (min-width: 400px)')
     expect(custom).toContain('@keyframes fade-in')
@@ -87,13 +97,13 @@ ${LAYER_TAIL}`
     expect(custom).toContain('format("woff2")')
   })
 
-  it('preserves compound and functional selectors', () => {
+  it('preserves compound and functional selectors', async () => {
     const css = `
 :is(.a, .b) > .c[data-x="1"]:not(:first-child) { color: red; }
 .parent .child::before { content: ""; }
 #app [data-theme="dark"] .title { font-weight: 700; }
 ${LAYER_TAIL}`
-    const custom = extractCustomCssFromCss(css)
+    const custom = await extractCustomCssFromCss(css)
     expect(custom).toContain(':is(.a, .b)')
     expect(custom).toContain('[data-x="1"]')
     expect(custom).toContain(':not(:first-child)')
@@ -101,7 +111,7 @@ ${LAYER_TAIL}`
     expect(custom).toContain('[data-theme="dark"]')
   })
 
-  it('preserves nested @media inside a static @layer block', () => {
+  it('preserves nested @media inside a static @layer block', async () => {
     const css = `
 @layer components {
   .card { padding: 1rem; }
@@ -110,13 +120,13 @@ ${LAYER_TAIL}`
   }
 }
 ${LAYER_TAIL}`
-    const custom = extractCustomCssFromCss(css)
+    const custom = await extractCustomCssFromCss(css)
     expect(custom).toContain('@layer components')
     expect(custom).toContain('@media (min-width: 640px)')
     expect(custom).toContain('.card')
   })
 
-  it('static marker: preserves @media appended after Uno layers', () => {
+  it('static marker: preserves @media appended after Uno layers', async () => {
     const css = `
 /* layer: utilities */
 .flex { display: flex; }
@@ -125,13 +135,13 @@ ${LAYER_TAIL}`
   .trailing { margin: auto; }
 }
 `
-    const custom = extractCustomCssFromCss(css)
+    const custom = await extractCustomCssFromCss(css)
     expect(custom).toContain('@media (min-width: 48rem)')
     expect(custom).toContain('.trailing')
     expect(custom).not.toContain('.flex')
   })
 
-  it('without static marker: trailing @media after layers is not collected', () => {
+  it('utility layer: non-utility @media after utilities is collected with generator', async () => {
     const css = `
 /* layer: utilities */
 .flex { display: flex; }
@@ -139,7 +149,89 @@ ${LAYER_TAIL}`
   .trailing { margin: auto; }
 }
 `
-    expect(extractCustomCssFromCss(css)).toBe('')
+    const custom = await withWind4(css)
+    expect(custom).toContain('@media (min-width: 48rem)')
+    expect(custom).toContain('.trailing')
+    expect(custom).not.toContain('.flex')
+  })
+
+  it('utility layer: @media with only utility rules is not custom CSS', async () => {
+    const { css: compiled } = await wind4.generate('container md:p-4', { preflights: false })
+    const css = `/* layer: shortcuts */\n${compiled}`
+    expect(await withWind4(css)).toBe('')
+  })
+
+  it('layers.preserve: entire layer is custom CSS', async () => {
+    const css = `
+/* layer: palette */
+:root { --color-primary-rgb: 78 107 239; --color-back-rgb: 255 255 255; }
+/* layer: default */
+.flex { display: flex; }
+`
+    const custom = await extractCustomCssFromCss(css, {
+      generator: wind4,
+      layers: { preserve: ['palette'] },
+    })
+    expect(custom).toContain('--color-primary-rgb: 78 107 239')
+    expect(custom).not.toMatch(/\.flex\s*\{/)
+  })
+
+  it('layers.skip: excludes layer from default filter list', async () => {
+    const css = `
+/* layer: default */
+.component-only { padding: 1rem; }
+.flex { display: flex; }
+`
+    const custom = await extractCustomCssFromCss(css, {
+      generator: wind4,
+      layers: { skip: ['default'] },
+    })
+    expect(custom).toBe('')
+  })
+
+  it('layers.skip overrides preserve', async () => {
+    const css = `
+/* layer: palette */
+:root { --color-x: 1; }
+`
+    const custom = await extractCustomCssFromCss(css, {
+      layers: { preserve: ['palette'], skip: ['palette'] },
+    })
+    expect(custom).toBe('')
+  })
+
+  it('layers.default override: only listed layers are filtered', async () => {
+    const css = `
+/* layer: palette */
+:root { --color-x: 1; }
+/* layer: default */
+.component-only { padding: 1rem; }
+.flex { display: flex; }
+`
+    const custom = await extractCustomCssFromCss(css, {
+      generator: wind4,
+      layers: { default: ['default'], preserve: ['palette'] },
+    })
+    expect(custom).toContain('--color-x: 1')
+    expect(custom).toContain('.component-only')
+    expect(custom).not.toMatch(/\.flex\s*\{/)
+  })
+
+  it('default layer: non-utility rules are custom CSS', async () => {
+    const css = `
+/* layer: default */
+.flex { display: flex; }
+.chat-box-monaco-code[data-v-abc123] {
+  margin-block: 0.5rem;
+}
+.splitpanes__splitter {
+  background: rgb(var(--color-boundary));
+}
+`
+    const custom = await withWind4(css)
+    expect(custom).not.toMatch(/\.flex\s*\{/)
+    expect(custom).toContain('[data-v-abc123]')
+    expect(custom).toContain('.splitpanes__splitter')
   })
 })
 

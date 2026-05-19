@@ -1,51 +1,56 @@
+import type { UnoGenerator } from '@unocss/core'
+import type { Rule } from 'postcss'
 import postcss from 'postcss'
 import selectorParser from 'postcss-selector-parser'
 
-/** Same regex shape as `isAttributifySelector` in @unocss/core (capturing groups required). */
-const ATTRIBUTIFY_SELECTOR_RE = /^\[.+?~?=".*"\]$/
-function isAttributifyToken(selector: string): boolean {
-  return ATTRIBUTIFY_SELECTOR_RE.test(selector)
-}
-
 /** Layers to skip: preflight/base CSS should not contribute utility tokens (avoids false attributify matches). */
 const SKIP_LAYERS = new Set(['base', 'theme', 'properties'])
+
+/** Layer names filtered by generator when `layers.default` is omitted. */
+export const CUSTOM_CSS_DEFAULT_LAYERS = ['default', 'utilities', 'shortcuts'] as const
+
+export interface CustomCssLayerConfig {
+  /**
+   * Entire layer content is appended to custom CSS as-is (e.g. `palette` to keep compiled `:root` vars).
+   */
+  preserve?: string[]
+  /**
+   * Layers where only rules the generator does not recognize as Uno utilities are kept
+   * (requires `generator`).
+   *
+   * @default {@link CUSTOM_CSS_DEFAULT_LAYERS}
+   */
+  default?: string[]
+  /**
+   * Never include these layers in custom CSS (wins over `preserve` and `default`).
+   */
+  skip?: string[]
+}
+
+export interface ResolvedCustomCssLayers {
+  preserve: Set<string>
+  default: Set<string>
+  skip: Set<string>
+}
+
+export function resolveCustomCssLayers(config?: CustomCssLayerConfig): ResolvedCustomCssLayers {
+  return {
+    preserve: new Set(config?.preserve ?? []),
+    default: new Set(config?.default ?? CUSTOM_CSS_DEFAULT_LAYERS),
+    skip: new Set(config?.skip ?? []),
+  }
+}
 
 const LAYER_LINE_RE = /^layer:\s*(\S+)/
 const ROOT_LAYER_MARKER_RE = /^\s*layer:\s*\S+/
 /** Start collecting static CSS even inside Uno layer blocks (until the next `layer:` comment). */
 const STATIC_REGION_RE = /^@unocss-preset-overwrite:static$/
 
-function attributifyTokenFromAttribute(
-  attr: selectorParser.Attribute,
-): string | null {
-  const op = attr.operator
-  if (op !== '~=' && op !== '=')
-    return null
-  const name = attr.attribute
-  const val = attr.value ?? ''
-  if (op === '~=')
-    return `[${name}~="${val}"]`
-  return `[${name}="${val}"]`
-}
-
-function extractFromSelector(sel: string, tokens: Set<string>) {
+export function extractFromSelector(sel: string, tokens: Set<string>) {
   if (!sel)
     return
-  try {
-    selectorParser((selectors) => {
-      selectors.walkClasses((classNode) => {
-        tokens.add(classNode.value)
-      })
-      selectors.walkAttributes((attr) => {
-        const raw = attributifyTokenFromAttribute(attr)
-        if (raw && isAttributifyToken(raw))
-          tokens.add(raw)
-      })
-    }).processSync(sel)
-  }
-  catch {
-    // Invalid selector; skip.
-  }
+  for (const token of extractTokensFromSelector(sel))
+    tokens.add(token)
 }
 
 function walkForTokens(container: postcss.Container, layer: string | null, tokens: Set<string>) {
@@ -68,11 +73,74 @@ function walkForTokens(container: postcss.Container, layer: string | null, token
   }
 }
 
-function collectCustomCssNodes(
+export interface ExtractCustomCssOptions {
+  /**
+   * UnoCSS generator (same config as the overwrite run). Used for `layers.default` matching
+   * via `parseToken` / `generate`.
+   */
+  generator?: UnoGenerator
+  /** Which input layers contribute to custom CSS output. */
+  layers?: CustomCssLayerConfig
+}
+
+async function shouldCollectRule(
+  rule: Rule,
+  currentLayer: string | null,
+  staticRegion: boolean,
+  layers: ResolvedCustomCssLayers,
+  isUnoUtilityRule?: UnoUtilityRuleMatcher,
+): Promise<boolean> {
+  if (!currentLayer || staticRegion)
+    return true
+  if (layers.skip.has(currentLayer))
+    return false
+  if (layers.preserve.has(currentLayer))
+    return true
+  if (layers.default.has(currentLayer)) {
+    if (!isUnoUtilityRule)
+      return false
+    return !(await isUnoUtilityRule(rule))
+  }
+  return false
+}
+
+async function collectCustomRulesFromAtRule(
+  atRule: postcss.AtRule,
+  currentLayer: string | null,
+  staticRegion: boolean,
+  layers: ResolvedCustomCssLayers,
+  out: postcss.ChildNode[],
+  isUnoUtilityRule?: UnoUtilityRuleMatcher,
+) {
+  const customChildren: postcss.ChildNode[] = []
+
+  for (const child of atRule.nodes ?? []) {
+    if (child.type === 'rule') {
+      if (await shouldCollectRule(child, currentLayer, staticRegion, layers, isUnoUtilityRule))
+        customChildren.push(child.clone())
+    }
+    else if (child.type === 'atrule') {
+      await collectCustomRulesFromAtRule(child, currentLayer, staticRegion, layers, customChildren, isUnoUtilityRule)
+    }
+  }
+
+  if (customChildren.length === 0)
+    return
+
+  const clone = atRule.clone()
+  clone.removeAll()
+  for (const child of customChildren)
+    clone.append(child)
+  out.push(clone)
+}
+
+async function collectCustomCssNodes(
   container: postcss.Container,
   layer: string | null,
   out: postcss.ChildNode[],
-  forceStatic = false,
+  forceStatic: boolean,
+  layers: ResolvedCustomCssLayers,
+  isUnoUtilityRule?: UnoUtilityRuleMatcher,
 ) {
   let currentLayer = layer
   let staticRegion = forceStatic
@@ -94,15 +162,17 @@ function collectCustomCssNodes(
       if (!currentLayer || staticRegion)
         out.push(node.clone())
     }
-    else if (node.type === 'rule' || node.type === 'decl') {
-      if (!currentLayer || staticRegion)
+    else if (node.type === 'rule') {
+      if (await shouldCollectRule(node, currentLayer, staticRegion, layers, isUnoUtilityRule))
         out.push(node.clone())
     }
     else if (node.type === 'atrule') {
-      if (!currentLayer || staticRegion)
+      if (currentLayer && layers.skip.has(currentLayer))
+        continue
+      if (!currentLayer || staticRegion || layers.preserve.has(currentLayer!))
         out.push(node.clone())
-      else
-        collectCustomCssNodes(node, currentLayer, out)
+      else if (layers.default.has(currentLayer!))
+        await collectCustomRulesFromAtRule(node, currentLayer, staticRegion, layers, out, isUnoUtilityRule)
     }
   }
 }
@@ -154,14 +224,23 @@ export function extractUnoClassTokensFromCss(css: string): string[] {
 }
 
 /**
- * Return CSS that sits outside Uno `layer:` blocks (e.g. custom rules before/after compiled output).
+ * Return custom CSS from a compiled Uno CSS string.
  *
- * Requires layer markers in the input; otherwise returns an empty string.
+ * - Rules **before** the first `layer:` comment, or inside a `@unocss-preset-overwrite:static` region.
+ * - Rules in `layers.default` ({@link CUSTOM_CSS_DEFAULT_LAYERS} when omitted) that the generator
+ *   does not recognize as Uno utilities.
+ * - Entire layers listed in `layers.preserve`.
+ * - Layers in `layers.skip` are never included (overrides `preserve` / `default`).
  *
- * Custom CSS appended after Uno layers can be marked with a block comment:
- * `/* @unocss-preset-overwrite:static *\/` — everything until the next `layer:` comment is preserved.
+ * Pass the same `UnoGenerator` instance (config) used for the overwrite run. Without it, only
+ * blocks outside layer markers / static regions / `layers.preserve` are collected.
+ *
+ * Requires layer markers; otherwise returns an empty string.
  */
-export function extractCustomCssFromCss(css: string): string {
+export async function extractCustomCssFromCss(
+  css: string,
+  options?: ExtractCustomCssOptions,
+): Promise<string> {
   const trimmed = css.trim()
   if (!trimmed)
     return ''
@@ -177,8 +256,13 @@ export function extractCustomCssFromCss(css: string): string {
   if (!rootDeclaresLayers(root))
     return ''
 
+  const layers = resolveCustomCssLayers(options?.layers)
+  const isUnoUtilityRule = options?.generator
+    ? createUnoUtilityRuleMatcher(options.generator)
+    : undefined
+
   const nodes: postcss.ChildNode[] = []
-  collectCustomCssNodes(root, null, nodes)
+  await collectCustomCssNodes(root, null, nodes, false, layers, isUnoUtilityRule)
   if (nodes.length === 0)
     return ''
 
@@ -187,4 +271,101 @@ export function extractCustomCssFromCss(css: string): string {
     out.append(node)
 
   return out.toString().trim()
+}
+
+/** Same regex shape as `isAttributifySelector` in @unocss/core. */
+const ATTRIBUTIFY_SELECTOR_RE = /^\[.+?~?=".*"\]$/
+
+export function extractTokensFromSelector(selector: string): string[] {
+  const tokens: string[] = []
+  if (!selector)
+    return tokens
+  if (ATTRIBUTIFY_SELECTOR_RE.test(selector.trim())) {
+    tokens.push(selector.trim())
+    return tokens
+  }
+  try {
+    selectorParser((selectors) => {
+      selectors.walkClasses(classNode => void tokens.push(classNode.value))
+      selectors.walkAttributes((attr) => {
+        const op = attr.operator
+        if (op !== '~=' && op !== '=')
+          return
+        const name = attr.attribute
+        const val = attr.value ?? ''
+        tokens.push(op === '~=' ? `[${name}~="${val}"]` : `[${name}="${val}"]`)
+      })
+    }).processSync(selector)
+  }
+  catch {
+    // Invalid selector; skip.
+  }
+  return tokens
+}
+
+function selectorPartsAppearInCss(selector: string, css: string): boolean {
+  const parts = selector.split(',').map(s => s.trim()).filter(Boolean)
+  if (parts.length === 0)
+    return false
+
+  const hit = new Set<string>()
+  postcss.parse(css).walkRules((rule) => {
+    if (!rule.selector)
+      return
+    for (const part of rule.selector.split(',').map(s => s.trim())) {
+      if (parts.includes(part))
+        hit.add(part)
+    }
+  })
+  return hit.size === parts.length
+}
+
+export type UnoUtilityRuleMatcher = (rule: Rule) => Promise<boolean>
+
+/**
+ * Match compiled utility-layer rules against the active UnoCSS generator
+ * ({@link UnoGenerator.parseToken} + {@link UnoGenerator.generate}).
+ */
+export function createUnoUtilityRuleMatcher(generator: UnoGenerator): UnoUtilityRuleMatcher {
+  const cache = new Map<string, boolean>()
+
+  return async (rule: Rule): Promise<boolean> => {
+    const cacheKey = rule.toString()
+    const cached = cache.get(cacheKey)
+    if (cached !== undefined)
+      return cached
+
+    const selector = rule.selector ?? ''
+    if (!selector) {
+      cache.set(cacheKey, false)
+      return false
+    }
+
+    const tokens = extractTokensFromSelector(selector)
+    if (tokens.length === 0) {
+      cache.set(cacheKey, false)
+      return false
+    }
+
+    const parsedTokens: string[] = []
+    for (const token of tokens) {
+      const util = await generator.parseToken(token)
+      if (util?.length)
+        parsedTokens.push(token)
+    }
+
+    if (parsedTokens.length === 0) {
+      cache.set(cacheKey, false)
+      return false
+    }
+
+    const { css } = await generator.generate(parsedTokens.join(' '), {
+      preflights: false,
+      safelist: false,
+    })
+
+    const result = !!css.trim() && selectorPartsAppearInCss(selector, css)
+    cache.set(cacheKey, result)
+    return result
+  }
 }
