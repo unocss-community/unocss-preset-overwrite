@@ -1,7 +1,7 @@
 {
   "name": "unocss-preset-overwrite",
   "type": "module",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "packageManager": "pnpm@10.33.0",
   "description": "Rebuild UnoCSS output with a new theme while keeping the same tokens.",
   "author": "chizukicn <https://github.com/chizukicn>",
